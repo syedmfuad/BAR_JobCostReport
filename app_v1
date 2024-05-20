@@ -1,0 +1,103 @@
+# Load the required packages
+if (!require("shiny")) install.packages("shiny")
+if (!require("openxlsx")) install.packages("openxlsx")
+if (!require("readxl")) install.packages("readxl")
+if (!require("dplyr")) install.packages("dplyr")
+library(shiny)
+library(openxlsx)
+library(readxl)
+library(dplyr)
+
+# Define UI
+ui <- fluidPage(
+  titlePanel("BAR Job Cost Report"),
+  
+  sidebarLayout(
+    sidebarPanel(
+      fileInput("file", "Choose Excel File",
+                accept = c(".xlsx", ".xls")),
+      selectInput("line_item", "Choose Line Item",
+                  choices = list("Line Item 1" = 1, "Line Item 2" = 2, "Line Item 3" = 3)),
+      actionButton("process", "Process Data"),
+      downloadButton("download", "Download Processed Data")
+    ),
+    
+    mainPanel(
+      tableOutput("extracted_data_table")
+    )
+  )
+)
+
+# Define server logic
+server <- function(input, output) {
+  
+  extracted_data <- eventReactive(input$process, {
+    req(input$file)
+    
+    # Read the uploaded Excel file based on extension
+    ext <- tools::file_ext(input$file$datapath)
+    if (ext == "xlsx") {
+      original_data <- read.xlsx(input$file$datapath, sheet = 1)
+    } else if (ext == "xls") {
+      original_data <- read_excel(input$file$datapath, sheet = 1)
+    } else {
+      stop("Invalid file type")
+    }
+    
+    # Ensure unique column names
+    original_data <- original_data %>%
+      setNames(make.names(names(original_data), unique = TRUE)) 
+    
+    # Initialize an empty dataframe to store the filtered results
+    filtered_data <- data.frame()
+    
+    # Loop through each row to apply the custom filtering logic
+    for (i in 1:(nrow(original_data) - 4)) {
+      # Check if the current row matches either of the regex patterns
+      if (grepl("^\\d{5}\\.\\d{3}\\.\\d{3}\\.\\d{2}.$", original_data[i, 1]) || 
+          grepl("^\\d{5}\\.\\s?\\d{2}\\.\\d{3}\\.\\d{2}.$", original_data[i, 1])) {
+        # Check the next three rows for the value input$line_item in the first column
+        if (original_data[i + 1, 1] == as.character(input$line_item) || 
+            original_data[i + 2, 1] == as.character(input$line_item) ||
+            original_data[i + 3, 1] == as.character(input$line_item)) {
+          # If the condition is met, include the current row in filtered_data
+          filtered_data <- rbind(filtered_data, original_data[i, ])
+        }
+      }
+    }
+    
+    # Extract the rows where the first column equals the selected line item
+    extracted_data <- original_data %>%
+      filter(.[[1]] == as.character(input$line_item)) %>%
+      select(1, 10, 12) %>%
+      mutate(across(c(2, 3), ~ -.)) # Negate the values of columns 10 and 12 (which are now columns 2 and 3 in the extracted data) 
+    
+    extracted_data[[1]] <- filtered_data[[1]]
+    
+    # Add the "CT" column based on the selected line item and ensure it's an integer
+    extracted_data$CT <- as.integer(input$line_item)
+    
+    # Rename columns
+    names(extracted_data) <- c("Code", "JTD Units", "JTD Cost", "CT")
+    
+    extracted_data
+  })
+  
+  output$extracted_data_table <- renderTable({
+    extracted_data()
+  }, rownames = TRUE)
+  
+  output$download <- downloadHandler(
+    filename = function() {
+      "processed_data.xlsx"
+    },
+    content = function(file) {
+      # Write the extracted data to an Excel file and ensure CT column is integer
+      write.xlsx(extracted_data() %>%
+                   mutate(CT = as.integer(CT)), file)
+    }
+  )
+}
+
+# Run the application
+shinyApp(ui = ui, server = server)
