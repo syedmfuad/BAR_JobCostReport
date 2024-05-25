@@ -1,0 +1,132 @@
+# Load the required packages
+if (!require("shiny")) install.packages("shiny")
+if (!require("openxlsx")) install.packages("openxlsx")
+#if (!require("readxl")) install.packages("readxl")
+if (!require("dplyr")) install.packages("dplyr")
+library(shiny)
+library(openxlsx)
+#library(readxl)
+library(dplyr)
+
+# Define UI
+ui <- fluidPage(
+  titlePanel("BAR Job Cost Tool"), 
+  
+  sidebarLayout(
+    sidebarPanel(
+      fileInput("file", "Choose Excel File (.xlsx files only)",
+                accept = ".xlsx"),
+      selectInput("line_item", "Choose Line Item",
+                  choices = setNames(1:8, paste("Line Item", 1:8))),
+      downloadButton("download", "Download Processed Data")
+    ),
+    
+    mainPanel(
+      tableOutput("extracted_data_table"),
+      verbatimTextOutput("debug_info")
+    )
+  )
+)
+
+# Define server logic
+server <- function(input, output, session) {
+  
+  # Reactive expression to read and process the file
+  processed_data <- reactive({
+    req(input$file)
+    
+    tryCatch({
+      # Read the uploaded Excel file
+      original_data <- read.xlsx(input$file$datapath, sheet = 1)
+      
+      # Ensure unique column names
+      original_data <- original_data %>%
+        setNames(make.names(names(original_data), unique = TRUE))
+      
+      # Initialize an empty dataframe to store the filtered results
+      filtered_data <- data.frame(Code = character(),
+                                  EST_Units = numeric(),
+                                  EST_UC = numeric(),
+                                  EST_Cost = numeric(),
+                                  JTD_Units = numeric(),
+                                  JTD_Cost = numeric(),
+                                  CT = integer(),
+                                  stringsAsFactors = FALSE)
+      
+      # Loop through each row to find matching line items
+      for (i in 1:nrow(original_data)) {
+        # Check if the current row matches the selected line item
+        if (original_data[i, 1] == as.character(input$line_item)) {
+          # Find the nearest XXXXX. code above the current row
+          XXXXX_value <- NA
+          for (j in seq(i - 1, 1, -1)) {
+            if (grepl("^\\d{5}\\.", original_data[j, 1])) {
+              XXXXX_value <- original_data[j, 1]
+              break
+            }
+          }
+          
+          # Extract and negate values from columns 3, 5, 6, 10, and 12
+          column3_value <- -as.numeric(original_data[i, 3])
+          column5_value <- -as.numeric(original_data[i, 5])
+          column6_value <- -as.numeric(original_data[i, 6])
+          column10_value <- -as.numeric(original_data[i, 10])
+          column12_value <- -as.numeric(original_data[i, 12])
+          
+          # Add the extracted data to filtered_data
+          new_row <- data.frame(Code = XXXXX_value,
+                                EST_Units = column3_value,
+                                EST_UC = column5_value,
+                                EST_Cost = column6_value,
+                                JTD_Units = column10_value,
+                                JTD_Cost = column12_value,
+                                CT = as.integer(input$line_item),
+                                stringsAsFactors = FALSE)
+          filtered_data <- rbind(filtered_data, new_row)
+        }
+      }
+      
+      # Reorder the columns as specified
+      reordered_data <- filtered_data %>%
+        select(Code, CT, JTD_Units, JTD_Cost, EST_Units, EST_UC, EST_Cost)
+      
+      list(data = reordered_data, error = NULL)
+    }, error = function(e) {
+      list(data = NULL, error = e$message)
+    })
+  })
+  
+  # Output the processed data as a table
+  output$extracted_data_table <- renderTable({
+    res <- processed_data()
+    if (is.null(res$error)) {
+      res$data
+    }
+  }, rownames = TRUE)
+  
+  # Output the debug information
+  output$debug_info <- renderText({
+    res <- processed_data()
+    if (!is.null(res$error)) {
+      paste("Error:", res$error)
+    } else {
+      paste("Columns in data:", paste(names(res$data), collapse = ", "))
+    }
+  })
+  
+  # Handle the file download
+  output$download <- downloadHandler(
+    filename = function() {
+      paste0("processed_data_", tools::file_path_sans_ext(input$file$name), ".xlsx")
+    },
+    content = function(file) {
+      res <- processed_data()
+      if (is.null(res$error)) {
+        write.xlsx(res$data, file)
+      }
+    }
+  )
+}
+
+# Run the application
+shinyApp(ui = ui, server = server)
